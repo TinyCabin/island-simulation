@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 const DROP_COUNT = 6000;
+const FLAKE_COUNT = 4000;
 const RAIN_AREA = 120;
 const RAIN_CEILING = 55;
 const RAIN_FLOOR = 1;
@@ -9,6 +10,7 @@ const FLASH_PEAK = 6000;
 
 const SKY_CLEAR = new THREE.Color(0x8ec5ee);
 const SKY_STORM = new THREE.Color(0x56606b);
+const SKY_SNOW = new THREE.Color(0xb8c5d4);
 const FLASH_SKY = new THREE.Color(0xffffff);
 
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -30,16 +32,21 @@ export class WeatherSystem {
     this.baseSun = engine.sun.intensity;
     this.baseHemi = engine.hemi.intensity;
     this.skyColor = new THREE.Color();
+    this.snowing = false;
 
     this.#createRain();
+    this.#createSnow();
     this.#createFlashLight();
   }
 
   update(delta, simDelta, weather) {
-    const target = weather.raining ? 1 : 0;
+    const precipOn = weather.raining || weather.precip > 0.25;
+    const target = precipOn ? 1 : 0;
     this.rainLevel += (target - this.rainLevel) * Math.min(1, delta * 1.5);
+    this.snowing = !!weather.isSnow && precipOn;
 
     this.#updateRain(simDelta, weather);
+    this.#updateSnow(simDelta, weather);
     this.#updateLightning(delta);
     this.#updateAtmosphere();
   }
@@ -74,14 +81,47 @@ export class WeatherSystem {
     this.engine.scene.add(this.rain);
   }
 
+  #createSnow() {
+    this.flakePos = new Float32Array(FLAKE_COUNT * 3);
+    this.flakeSpeed = new Float32Array(FLAKE_COUNT);
+    this.flakeDrift = new Float32Array(FLAKE_COUNT);
+
+    for (let i = 0; i < FLAKE_COUNT; i++) {
+      this.flakePos[i * 3] = randomIn(-RAIN_AREA / 2, RAIN_AREA / 2);
+      this.flakePos[i * 3 + 1] = randomIn(RAIN_FLOOR, RAIN_CEILING);
+      this.flakePos[i * 3 + 2] = randomIn(-RAIN_AREA / 2, RAIN_AREA / 2);
+      this.flakeSpeed[i] = randomIn(4, 10);
+      this.flakeDrift[i] = randomIn(-1.5, 1.5);
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    this.snowAttribute = new THREE.BufferAttribute(this.flakePos, 3);
+    this.snowAttribute.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('position', this.snowAttribute);
+
+    const material = new THREE.PointsMaterial({
+      color: 0xf2f6fa,
+      size: 0.55,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      sizeAttenuation: true,
+    });
+    this.snow = new THREE.Points(geometry, material);
+    this.snow.frustumCulled = false;
+    this.snow.visible = false;
+    this.engine.scene.add(this.snow);
+  }
+
   #createFlashLight() {
     this.flashLight = new THREE.PointLight(0xbcd2ff, 0, 0, 2);
     this.engine.scene.add(this.flashLight);
   }
 
   #updateRain(simDelta, weather) {
-    this.rain.visible = this.rainLevel > 0.02;
-    if (!this.rain.visible) return;
+    const showRain = this.rainLevel > 0.02 && !this.snowing;
+    this.rain.visible = showRain;
+    if (!showRain) return;
 
     const active = Math.floor(DROP_COUNT * this.rainLevel);
     this.rain.geometry.setDrawRange(0, active * 2);
@@ -122,16 +162,53 @@ export class WeatherSystem {
     this.rainAttribute.needsUpdate = true;
   }
 
+  #updateSnow(simDelta, weather) {
+    const showSnow = this.rainLevel > 0.02 && this.snowing;
+    this.snow.visible = showSnow;
+    if (!showSnow) return;
+
+    const active = Math.floor(FLAKE_COUNT * this.rainLevel);
+    this.snow.geometry.setDrawRange(0, active);
+
+    const angle = THREE.MathUtils.degToRad(weather.windAngle);
+    const driftX = Math.cos(angle) * weather.windSpeed * 3;
+    const driftZ = Math.sin(angle) * weather.windSpeed * 3;
+    const half = RAIN_AREA / 2;
+
+    for (let i = 0; i < active; i++) {
+      const h = i * 3;
+      let x = this.flakePos[h] + (driftX + this.flakeDrift[i]) * simDelta;
+      let y = this.flakePos[h + 1] - this.flakeSpeed[i] * simDelta;
+      let z = this.flakePos[h + 2] + driftZ * simDelta;
+
+      if (y < RAIN_FLOOR) {
+        y = RAIN_CEILING;
+        x = randomIn(-half, half);
+        z = randomIn(-half, half);
+      }
+      if (x > half) x -= RAIN_AREA;
+      else if (x < -half) x += RAIN_AREA;
+      if (z > half) z -= RAIN_AREA;
+      else if (z < -half) z += RAIN_AREA;
+
+      this.flakePos[h] = x;
+      this.flakePos[h + 1] = y;
+      this.flakePos[h + 2] = z;
+    }
+    this.snowAttribute.needsUpdate = true;
+  }
+
   #updateAtmosphere() {
     const { scene, sun, hemi } = this.engine;
     const flash = this.flashAge < 1 ? flashEnvelope(this.flashAge) : 0;
+    const stormColor = this.snowing ? SKY_SNOW : SKY_STORM;
 
-    this.skyColor.copy(SKY_CLEAR).lerp(SKY_STORM, this.rainLevel).lerp(FLASH_SKY, flash * 0.35);
+    this.skyColor.copy(SKY_CLEAR).lerp(stormColor, this.rainLevel).lerp(FLASH_SKY, flash * 0.35);
     scene.background.copy(this.skyColor);
     scene.fog.color.copy(this.skyColor);
 
-    sun.intensity = lerp(this.baseSun, this.baseSun * 0.35, this.rainLevel);
-    hemi.intensity = lerp(this.baseHemi, this.baseHemi * 0.7, this.rainLevel) + flash * 1.5;
+    sun.intensity = lerp(this.baseSun, this.baseSun * (this.snowing ? 0.55 : 0.35), this.rainLevel);
+    hemi.intensity = lerp(this.baseHemi, this.baseHemi * 0.75, this.rainLevel) + flash * 1.5;
   }
 
   #updateLightning(delta) {

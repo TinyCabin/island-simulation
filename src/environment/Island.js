@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CLIMATE, LAKES, SIM_SEED, Soil, SoilMode, SOIL_EVOLVE, WORLD } from '../config.js';
 import { fbm } from '../utils/noise.js';
-import { basinDigAt, generateBasins, nearestBasin } from './lakes.js';
+import { basinDigAt, basinWaterRadius, generateBasins, nearestBasin } from './lakes.js';
 
 const SOIL_ORDER = [Soil.GRASSLAND, Soil.SAND, Soil.ROCK, Soil.WATER, Soil.WETLAND];
 const SOIL_COLORS = {
@@ -90,7 +90,7 @@ export class Island {
     let bonus = 0;
     const near = nearestBasin(this.basins, x, z);
     if (near) {
-      const waterR = near.basin.radius * near.basin.waterRatio;
+      const waterR = basinWaterRadius(near.basin);
       const fall = LAKES.moistureFalloff;
       if (near.dist < near.basin.radius + fall) {
         bonus = Math.max(bonus, CLIMATE.pondMoistureBonus * (1 - smoothstep(waterR, waterR + fall, near.dist)));
@@ -133,10 +133,7 @@ export class Island {
     for (let i = 0; i < this.basins.length; i++) {
       const b = this.basins[i];
       const d = Math.hypot(x - b.x, z - b.z);
-      if (d < b.radius * b.waterRatio + 0.8) return false;
-      if (soil === Soil.WETLAND && d < b.radius * 0.9 + LAKES.wetlandPlantBuffer) {
-        // mokradło: pozwalamy tylko jeśli gatunek to obsłuży (canLive); tu nie blokujemy całego Wetland
-      }
+      if (d < basinWaterRadius(b) + 0.8) return false;
     }
 
     for (let i = 0; i < this.puddles.length; i++) {
@@ -266,7 +263,7 @@ export class Island {
         if (this.soilAt(x, z) === Soil.WATER) continue;
         if (this.puddles.some((p) => Math.hypot(p.x - x, p.z - z) < 4)) continue;
         const near = nearestBasin(this.basins, x, z);
-        if (near && near.dist < near.basin.radius * near.basin.waterRatio + 2) continue;
+        if (near && near.dist < basinWaterRadius(near.basin) + 2) continue;
 
         const r = rng.range(LAKES.puddleRadius[0], LAKES.puddleRadius[1]);
         this.puddles.push({ x, z, radius: r, life: 4 });
@@ -323,10 +320,73 @@ export class Island {
     for (let i = 0; i < this.basins.length; i++) {
       const b = this.basins[i];
       const d = Math.hypot(x - b.x, z - b.z);
-      if (d < b.radius * b.waterRatio) return { soil: Soil.WATER, locked: true };
-      if (d < b.radius * 0.88) return { soil: Soil.WETLAND, locked: true };
+      if (d > b.radius) continue;
+      const waterR = basinWaterRadius(b);
+      if (b.fill > 0.06 && d < waterR) return { soil: Soil.WATER, locked: true };
+      // Mokradło: pierścień przy wyższym fill, albo błoto na dnie przy niskim
+      const wetR = b.radius * (0.35 + 0.55 * b.fill);
+      if (d < wetR) return { soil: Soil.WETLAND, locked: true };
     }
     return null;
+  }
+
+  /**
+   * Deszcz / wilgoć dopełnia misy; susza obniża lustro.
+   * Aktualizuje fill, meshe i siatkę gleby w basenach.
+   */
+  updateBasinFill(dt, { precip = 0, soilMoisture = 0.5, raining = false } = {}) {
+    let changed = false;
+    for (let i = 0; i < this.basins.length; i++) {
+      const b = this.basins[i];
+      const before = b.fill;
+      let delta = 0;
+      if (raining || precip > 0.2) delta += precip * LAKES.fillFromPrecip;
+      if (soilMoisture >= LAKES.fillWetSoilM) {
+        delta += (soilMoisture - LAKES.fillWetSoilM) * LAKES.fillFromSoilM;
+      }
+      if (soilMoisture < LAKES.fillDrySoilM && precip < 0.15) {
+        delta -= LAKES.fillDrain * (1 - soilMoisture);
+      }
+      b.fill = clamp01(b.fill + delta * dt);
+      if (Math.abs(b.fill - before) > 0.002) changed = true;
+    }
+    if (changed) {
+      this.#syncBasinSoilCells();
+      this.#updateLakeMeshTransforms();
+      this.soilDirty = true;
+    }
+  }
+
+  /** Przelicz Water/Wetland w komórkach basenów po zmianie fill. */
+  #syncBasinSoilCells() {
+    const size = this.gridSize;
+    const cell = WORLD.soilGridCell;
+    const extent = this.extent;
+    for (let gz = 0; gz < size; gz++) {
+      for (let gx = 0; gx < size; gx++) {
+        const i = gz * size + gx;
+        if (!this.soilLocked[i] && this.soilGrid[i] !== IDX_WATER && this.soilGrid[i] !== IDX_WETLAND) continue;
+        const x = -extent + (gx + 0.5) * cell;
+        const z = -extent + (gz + 0.5) * cell;
+        // Tylko komórki należące do basenów (nie ocean)
+        const shore = this.#shore(x, z);
+        if (shore > LAND_LIMIT) continue;
+        const classified = this.#basinSoilAt(x, z);
+        if (classified) {
+          const idx = SOIL_ORDER.indexOf(classified.soil);
+          this.soilGrid[i] = idx;
+          this.soilTarget[i] = idx;
+          this.soilLocked[i] = 1;
+        } else if (this.soilLocked[i]) {
+          // Było w basenie, fill spadł — wróć do trawy/skały
+          const rock = this.#rockNoise(x, z) > ROCK_THRESHOLD;
+          const idx = rock ? IDX_ROCK : IDX_GRASS;
+          this.soilGrid[i] = idx;
+          this.soilTarget[i] = idx;
+          this.soilLocked[i] = 0;
+        }
+      }
+    }
   }
 
   #classify(x, z) {
@@ -444,6 +504,12 @@ export class Island {
     return mesh;
   }
 
+  /** Y lustra: przy fill=1 ≈ poziom brzegu misy (heightAt(środek)+depth). */
+  #basinWaterY(b) {
+    const bottom = this.heightAt(b.x, b.z);
+    return bottom + b.depth * Math.max(0.05, b.fill);
+  }
+
   #rebuildLakeMeshes() {
     while (this.lakeGroup.children.length) {
       const child = this.lakeGroup.children[0];
@@ -462,17 +528,33 @@ export class Island {
     });
 
     for (const b of this.basins) {
-      const r = b.radius * b.waterRatio;
-      const geo = new THREE.CircleGeometry(r, 32);
+      const r = Math.max(0.35, basinWaterRadius(b));
+      const geo = new THREE.CircleGeometry(1, 32); // jednostkowy — skalujemy fill
       geo.rotateX(-Math.PI / 2);
       const mesh = new THREE.Mesh(geo, mat.clone());
-      mesh.position.set(b.x, LAKES.waterLevel, b.z);
+      mesh.userData.basin = true;
+      mesh.scale.set(r, 1, r);
+      mesh.position.set(b.x, this.#basinWaterY(b), b.z);
+      mesh.visible = b.fill > 0.04;
       mesh.receiveShadow = true;
       this.lakeGroup.add(mesh);
       this.lakeMeshes.push(mesh);
     }
 
     this.#rebuildPuddleMeshes();
+  }
+
+  #updateLakeMeshTransforms() {
+    for (let i = 0; i < this.basins.length; i++) {
+      const b = this.basins[i];
+      const mesh = this.lakeMeshes[i];
+      if (!mesh) continue;
+      const r = Math.max(0.35, basinWaterRadius(b));
+      mesh.scale.set(r, 1, r);
+      mesh.position.set(b.x, this.#basinWaterY(b), b.z);
+      mesh.visible = b.fill > 0.04;
+      mesh.material.opacity = 0.55 + 0.4 * b.fill;
+    }
   }
 
   #rebuildPuddleMeshes() {
@@ -497,7 +579,8 @@ export class Island {
       const geo = new THREE.CircleGeometry(p.radius, 16);
       geo.rotateX(-Math.PI / 2);
       const mesh = new THREE.Mesh(geo, mat.clone());
-      mesh.position.set(p.x, LAKES.waterLevel + 0.02, p.z);
+      const y = Math.max(0.05, this.heightAt(p.x, p.z) + 0.15);
+      mesh.position.set(p.x, y, p.z);
       mesh.userData.puddle = true;
       this.lakeGroup.add(mesh);
     }

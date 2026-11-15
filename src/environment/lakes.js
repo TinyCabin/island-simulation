@@ -26,14 +26,21 @@ export function generateBasins(seed, islandRadius = WORLD.islandRadius) {
     const large = n === 1;
     const radius = large ? rng.range(8, 14) : rng.range(3.2, 7.5);
     const depth = large ? rng.range(4.2, 6.2) : rng.range(2.0, 4.2);
-    const waterRatio = large ? rng.range(0.4, 0.55) : rng.range(0.35, 0.5);
+    // fill 0..1: czasem prawie pusta misa, czasem pełna — deszcz dopełnia
+    const fill = rng.range(0.05, 0.75);
 
     if (basins.some((b) => Math.hypot(b.x - x, b.z - z) < b.radius + radius + 5)) continue;
 
-    basins.push({ x, z, radius, depth, waterRatio });
+    basins.push({ x, z, radius, depth, fill });
   }
 
   return basins;
+}
+
+/** Promień lustra wody w basenie zależny od fill. */
+export function basinWaterRadius(basin) {
+  const t = Math.min(1, Math.max(0, basin.fill ?? 0));
+  return basin.radius * (LAKES.fillRadiusMin + (LAKES.fillRadiusMax - LAKES.fillRadiusMin) * t);
 }
 
 /** Wpływ basenów na wysokość (suma zagłębień). */

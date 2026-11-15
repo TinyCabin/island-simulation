@@ -273,6 +273,15 @@ console.log('\n=== I) Jeziora z seeda ===');
   const centerSoil = island.soilAt(0, 0);
   assert('środek mapy nie jest wymuszonym stawem (chyba że basen trafił blisko)', true);
   console.log(`  seed ${SIM_SEED}: ${island.basins.length} basen(ów), soil(0,0)=${centerSoil}`);
+
+  if (island.basins.length > 0) {
+    const b = island.basins[0];
+    const fill0 = b.fill;
+    island.updateBasinFill(20, { precip: 1, soilMoisture: 0.9, raining: true });
+    assert('deszcz podnosi fill basenu', b.fill > fill0 + 0.05);
+    island.updateBasinFill(30, { precip: 0, soilMoisture: 0.1, raining: false });
+    assert('susza obniża fill basenu', b.fill < 0.95);
+  }
 }
 
 console.log(failed === 0 ? '\nWszystkie asercje OK.' : `\n${failed} asercji nie przeszło.`);

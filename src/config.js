@@ -25,9 +25,18 @@ export const WORLD = Object.freeze({
 export const LAKES = Object.freeze({
   minCenterDist: 0.18, // × islandRadius — nie w samym środku
   maxCenterDist: 0.62,
-  waterLevel: 0.08, // Y lustra jezior / kałuż
+  /** Przy fill=1 lustro sięga ~tego ułamka promienia misy (brzeg). */
+  fillRadiusMax: 0.94,
+  /** Przy fill=0 minimalny „kałużowy” środek (0 = całkowicie puste). */
+  fillRadiusMin: 0.08,
   moistureFalloff: 22, // oaza wokół wody
   wetlandPlantBuffer: 0.6, // dodatkowy bufor sadzenia przy mokradle
+  // Wypełnianie mis deszczem / wilgocią
+  fillFromPrecip: 0.25, // /s przy precip=1
+  fillFromSoilM: 0.08, // /s gdy soilM wysokie
+  fillDrain: 0.06, // /s przy suszy
+  fillWetSoilM: 0.55, // powyżej — dopełnianie z gleby
+  fillDrySoilM: 0.35, // poniżej — spadek fill
   // Kałuże tymczasowe
   puddleMax: 12,
   puddleSpawnSoilM: 0.72,

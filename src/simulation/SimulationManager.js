@@ -98,7 +98,13 @@ export class SimulationManager {
         windSpeed: this.weather.windSpeed,
         coverAt: (x, z) => this.coverAt(x, z),
       });
-      this.island.updatePuddles(soilDt, this.weather.soilMoisture, this.rng);
+      const w = this.weather;
+      this.island.updateBasinFill(soilDt, {
+        precip: w.precip,
+        soilMoisture: w.soilMoisture,
+        raining: w.raining,
+      });
+      this.island.updatePuddles(soilDt, w.soilMoisture, this.rng);
     }
 
     const w = this.weather;

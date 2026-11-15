@@ -224,6 +224,9 @@ export const CLIMATE = Object.freeze({
   lapseRatePerUnit: 1.6, // °C chłodniej na każdą jednostkę wysokości terenu
   pondMoistureBonus: 0.3, // o tyle wilgotniej przy stawie (oaza)
   pondFalloffRadius: 30, // do jakiej odległości od środka działa bonus
+  /** Słony ocean: prawie nie nasącza (lekka mgła/spray przy brzegu). */
+  oceanSprayMoisture: 0.025,
+  oceanSprayBand: 0.06, // ułamek radiusu wyspy od linii brzegu w głąb lądu
 
   // Szerokość strefy przejścia między sąsiednimi biomami (0..1 odstępu między
   // środkami pasm). 0 = ostra granica, 1 = płynne mieszanie na całym odcinku.

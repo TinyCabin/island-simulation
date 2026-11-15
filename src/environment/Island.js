@@ -85,7 +85,7 @@ export class Island {
     return this.soilMode;
   }
 
-  /** Bonus wilgoci od jezior / mokradeł / kałuż. Pusta misa ≈ brak oazy. */
+  /** Bonus wilgoci od jezior / mokradeł / kałuż. Ocean ≈ prawie nic (sól). */
   moistureBonusAt(x, z) {
     let bonus = 0;
     const near = nearestBasin(this.basins, x, z);
@@ -100,9 +100,19 @@ export class Island {
       }
     }
     const soil = this.soilAt(x, z);
-    if (soil === Soil.WETLAND) bonus = Math.max(bonus, CLIMATE.pondMoistureBonus * 0.45);
-    if (soil === Soil.WATER && Math.hypot(x, z) / this.radius < LAND_LIMIT) {
+    // Mokradła / woda śródlądowa (baseny) — ocean słony nie daje oazy
+    if (soil === Soil.WETLAND && this.#isFreshInland(x, z)) {
+      bonus = Math.max(bonus, CLIMATE.pondMoistureBonus * 0.45);
+    }
+    if (soil === Soil.WATER && this.#isFreshInland(x, z)) {
       bonus = Math.max(bonus, CLIMATE.pondMoistureBonus * 0.85);
+    }
+    // Lekki spray przy brzegu (słona woda prawie nie nasącza)
+    const shore = this.#shore(x, z);
+    const band = CLIMATE.oceanSprayBand;
+    if (shore > LAND_LIMIT - band && shore < LAND_LIMIT + band * 0.5) {
+      const edge = 1 - Math.abs(shore - LAND_LIMIT) / band;
+      bonus = Math.max(bonus, CLIMATE.oceanSprayMoisture * clamp01(edge));
     }
     for (let i = 0; i < this.puddles.length; i++) {
       const p = this.puddles[i];
@@ -367,14 +377,29 @@ export class Island {
     return false;
   }
 
+  /** Słodka woda / mokradło związane z basenem (nie ocean przy brzegu). */
+  #isFreshInland(x, z) {
+    for (let i = 0; i < this.basins.length; i++) {
+      const b = this.basins[i];
+      const floodR = b.radius * (1 + LAKES.wetlandFloodExtra * Math.max(b.fill, 0.2));
+      if (Math.hypot(x - b.x, z - b.z) < floodR + 1.5) return true;
+    }
+    return false;
+  }
+
+  #isFreshWet(x, z) {
+    const s = this.soilAt(x, z);
+    if (s !== Soil.WATER && s !== Soil.WETLAND) return false;
+    return this.#isFreshInland(x, z);
+  }
+
   #nearWetOrWater(x, z, radius) {
-    // 4 kierunki + środek — tanio wystarczy do rozlewiska
-    const s0 = this.soilAt(x, z);
-    if (s0 === Soil.WATER || s0 === Soil.WETLAND) return true;
-    if (this.soilAt(x + radius, z) === Soil.WATER || this.soilAt(x + radius, z) === Soil.WETLAND) return true;
-    if (this.soilAt(x - radius, z) === Soil.WATER || this.soilAt(x - radius, z) === Soil.WETLAND) return true;
-    if (this.soilAt(x, z + radius) === Soil.WATER || this.soilAt(x, z + radius) === Soil.WETLAND) return true;
-    if (this.soilAt(x, z - radius) === Soil.WATER || this.soilAt(x, z - radius) === Soil.WETLAND) return true;
+    // Tylko woda/mokradło przy basenach — ocean nie tworzy solnych „mokradeł”
+    if (this.#isFreshWet(x, z)) return true;
+    if (this.#isFreshWet(x + radius, z)) return true;
+    if (this.#isFreshWet(x - radius, z)) return true;
+    if (this.#isFreshWet(x, z + radius)) return true;
+    if (this.#isFreshWet(x, z - radius)) return true;
     return false;
   }
 
@@ -581,6 +606,62 @@ export class Island {
     return bottom + b.depth * Math.max(0.05, b.fill);
   }
 
+  /**
+   * Lustro tylko tam, gdzie teren jest poniżej poziomu wody (w misie),
+   * zamiast niebieskiego krążka nakładanego na krajobraz.
+   */
+  #buildBasinWaterGeometry(b) {
+    const waterY = this.#basinWaterY(b);
+    const rings = 14;
+    const segs = 36;
+    const maxR = b.radius * 1.02;
+    const positions = [];
+    const indices = [];
+    const grid = []; // [ring][seg] -> index or -1
+
+    for (let ri = 0; ri <= rings; ri++) {
+      const row = [];
+      const r = (ri / rings) * maxR;
+      for (let si = 0; si < segs; si++) {
+        const ang = (si / segs) * Math.PI * 2;
+        const x = b.x + Math.cos(ang) * r;
+        const z = b.z + Math.sin(ang) * r;
+        const terrainY = this.heightAt(x, z);
+        if (terrainY < waterY - 0.04) {
+          row.push(positions.length / 3);
+          positions.push(x, waterY, z);
+        } else {
+          row.push(-1);
+        }
+      }
+      grid.push(row);
+    }
+
+    for (let ri = 0; ri < rings; ri++) {
+      for (let si = 0; si < segs; si++) {
+        const si2 = (si + 1) % segs;
+        const a = grid[ri][si];
+        const bIdx = grid[ri][si2];
+        const c = grid[ri + 1][si2];
+        const d = grid[ri + 1][si];
+        if (a >= 0 && bIdx >= 0 && c >= 0) indices.push(a, bIdx, c);
+        if (a >= 0 && c >= 0 && d >= 0) indices.push(a, c, d);
+      }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    if (positions.length < 9 || indices.length < 3) {
+      // pusty — niewidoczny placeholder
+      geo.setAttribute('position', new THREE.Float32BufferAttribute([0, -99, 0, 0, -99, 0, 0, -99, 0], 3));
+      geo.setIndex([0, 1, 2]);
+    } else {
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geo.setIndex(indices);
+    }
+    geo.computeVertexNormals();
+    return geo;
+  }
+
   #rebuildLakeMeshes() {
     while (this.lakeGroup.children.length) {
       const child = this.lakeGroup.children[0];
@@ -591,23 +672,25 @@ export class Island {
     this.lakeMeshes = [];
 
     const mat = new THREE.MeshStandardMaterial({
-      color: 0x3a8ec4,
-      roughness: 0.22,
-      metalness: 0.08,
+      color: 0x2f78a8,
+      roughness: 0.18,
+      metalness: 0.12,
       transparent: true,
-      opacity: 0.92,
+      opacity: 0.78,
+      depthWrite: true,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
     });
 
     for (const b of this.basins) {
-      const r = Math.max(0.35, basinWaterRadius(b));
-      const geo = new THREE.CircleGeometry(1, 32); // jednostkowy — skalujemy fill
-      geo.rotateX(-Math.PI / 2);
+      const geo = this.#buildBasinWaterGeometry(b);
       const mesh = new THREE.Mesh(geo, mat.clone());
       mesh.userData.basin = true;
-      mesh.scale.set(r, 1, r);
-      mesh.position.set(b.x, this.#basinWaterY(b), b.z);
-      mesh.visible = b.fill > 0.04;
+      mesh.userData.lastFill = b.fill;
+      mesh.visible = b.fill > 0.04 && geo.attributes.position.count > 3;
       mesh.receiveShadow = true;
+      mesh.renderOrder = 1;
       this.lakeGroup.add(mesh);
       this.lakeMeshes.push(mesh);
     }
@@ -620,11 +703,14 @@ export class Island {
       const b = this.basins[i];
       const mesh = this.lakeMeshes[i];
       if (!mesh) continue;
-      const r = Math.max(0.35, basinWaterRadius(b));
-      mesh.scale.set(r, 1, r);
-      mesh.position.set(b.x, this.#basinWaterY(b), b.z);
-      mesh.visible = b.fill > 0.04;
-      mesh.material.opacity = 0.55 + 0.4 * b.fill;
+      // Przebuduj geometrię gdy fill się zmieni (kontur lustra w misie)
+      if (Math.abs((mesh.userData.lastFill ?? 0) - b.fill) > 0.012) {
+        mesh.geometry.dispose();
+        mesh.geometry = this.#buildBasinWaterGeometry(b);
+        mesh.userData.lastFill = b.fill;
+      }
+      mesh.visible = b.fill > 0.04 && mesh.geometry.attributes.position.count > 3;
+      mesh.material.opacity = 0.55 + 0.28 * b.fill;
     }
   }
 

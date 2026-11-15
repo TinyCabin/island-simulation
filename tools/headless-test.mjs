@@ -293,6 +293,24 @@ console.log('\n=== I) Jeziora z seeda ===');
     const bonusWet = island.moistureBonusAt(b.x + b.radius * 0.3, b.z);
     assert('pusta misa daje dużo mniejszą oazę niż pełna', bonusDry < bonusWet * 0.5);
   }
+
+  // Ocean (słony) nie daje dużej oazy — brzeg daleko od basenów, gleba ≠ jezioro
+  let coastBonus = 1;
+  let oceanBonus = 1;
+  let foundCoast = false;
+  for (let a = 0; a < 48; a++) {
+    const ang = (a / 48) * Math.PI * 2;
+    const cx = Math.cos(ang) * island.radius * 0.9;
+    const cz = Math.sin(ang) * island.radius * 0.9;
+    if (island.basins.some((basin) => Math.hypot(cx - basin.x, cz - basin.z) < basin.radius + 28)) continue;
+    if (island.soilAt(cx, cz) === 'Water') continue;
+    coastBonus = island.moistureBonusAt(cx, cz);
+    oceanBonus = island.moistureBonusAt(Math.cos(ang) * island.radius * 1.15, Math.sin(ang) * island.radius * 1.15);
+    foundCoast = true;
+    break;
+  }
+  assert('znaleziono brzeg bez basenu', foundCoast);
+  assert('ocean/brzeg daje znikomą wilgoć', coastBonus < 0.06 && oceanBonus < 0.06);
 }
 
 console.log(failed === 0 ? '\nWszystkie asercje OK.' : `\n${failed} asercji nie przeszło.`);

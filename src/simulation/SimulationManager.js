@@ -103,6 +103,8 @@ export class SimulationManager {
         precip: w.precip,
         soilMoisture: w.soilMoisture,
         raining: w.raining,
+        temperature: w.temperature,
+        airMoisture: w.airMoisture,
       });
       this.island.updatePuddles(soilDt, w.soilMoisture, this.rng);
     }

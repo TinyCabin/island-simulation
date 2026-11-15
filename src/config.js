@@ -34,21 +34,32 @@ export const LAKES = Object.freeze({
   // Wypełnianie mis deszczem / wilgocią
   fillFromPrecip: 0.25, // /s przy precip=1
   fillFromSoilM: 0.08, // /s gdy soilM wysokie
-  fillDrain: 0.06, // /s przy suszy
+  fillDrain: 0.06, // /s przy suszy (baza)
   fillWetSoilM: 0.55, // powyżej — dopełnianie z gleby
   fillDrySoilM: 0.35, // poniżej — spadek fill
+  // Parowanie (upał + suche powietrze) — pustynia wysusza misy
+  evaporateBase: 0.14, // /s przy T=40 i airM=0
+  evaporateTempStart: 18, // °C od którego rośnie parowanie
+  evaporateTempFull: 38,
+  sandEvaporateMult: 1.7, // piaszczyste otoczenie szybciej traci wodę
+  wetlandRetain: 0.55, // mokradła / wysoki fill ograniczają parowanie
+  // Oaza tylko gdy jest realna woda
+  moistureFillPower: 1.6, // fill^power — pusta misa ≈ 0 wilgoci
   // Kałuże tymczasowe
   puddleMax: 12,
   puddleSpawnSoilM: 0.72,
   puddleDrySoilM: 0.38,
   puddleRadius: [1.2, 2.8],
   puddleTickSeconds: 3,
-  // Mokradła dynamiczne (niezablokowane komórki)
-  wetlandFormSoilM: 0.62,
-  wetlandDrySoilM: 0.32,
-  wetlandMaxHeight: 0.55, // tylko w zagłębieniach
-  wetlandFormRate: 0.04,
-  wetlandDryRate: 0.03,
+  // Mokradła dynamiczne (rozlewisko)
+  wetlandFormSoilM: 0.55,
+  wetlandDrySoilM: 0.28,
+  wetlandMaxHeight: 0.85,
+  wetlandFormRate: 0.05,
+  wetlandDryRate: 0.04,
+  wetlandFloodExtra: 0.55, // × radius × fill — jak daleko mokradło wylewa poza misę
+  floodToWaterSoilM: 0.78, // mokradło → płytka woda przy bardzo mokro
+  floodWaterDrySoilM: 0.4,
 });
 
 /* Ewolucja gleby (tylko Mixed) + reguły sadzenia / wygładzanie paint */

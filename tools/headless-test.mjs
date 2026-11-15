@@ -193,7 +193,10 @@ console.log('\n=== H) Gleba: ewolucja, canPlantAt, memento ===');
     const gx = i % size;
     rx = -island.extent + (gx + 0.5) * 0.5;
     rz = -island.extent + (gz + 0.5) * 0.5;
-    if (island.soilAt(rx, rz) === 'Rock' && Math.hypot(rx, rz) > 12) {
+    if (Math.hypot(rx, rz) <= 12) continue;
+    // Daleko od basenów — inaczej rock→grass szybko staje się mokradłem/wodą
+    if (island.basins.some((b) => Math.hypot(rx - b.x, rz - b.z) < b.radius * 2.8)) continue;
+    if (island.soilAt(rx, rz) === 'Rock') {
       rockI = i;
       break;
     }
@@ -201,10 +204,11 @@ console.log('\n=== H) Gleba: ewolucja, canPlantAt, memento ===');
   assert('znaleziono komórkę Rock do testu', rockI >= 0);
 
   const snap = island.createSoilSnapshot();
+  island.soilLocked[rockI] = 0;
+  island.soilGrid[rockI] = 2;
   island.soilProgress[rockI] = 0;
   island.soilTarget[rockI] = 2;
-  // Wymuś warunki wzrostu: wilgotno + cover (stride → więcej iteracji)
-  for (let t = 0; t < 400; t++) {
+  for (let t = 0; t < 500; t++) {
     island.evolveSoil(1, {
       soilMoisture: 0.9,
       windSpeed: 0.1,
@@ -277,10 +281,16 @@ console.log('\n=== I) Jeziora z seeda ===');
   if (island.basins.length > 0) {
     const b = island.basins[0];
     const fill0 = b.fill;
-    island.updateBasinFill(20, { precip: 1, soilMoisture: 0.9, raining: true });
+    island.updateBasinFill(20, { precip: 1, soilMoisture: 0.9, raining: true, temperature: 22, airMoisture: 0.8 });
     assert('deszcz podnosi fill basenu', b.fill > fill0 + 0.05);
-    island.updateBasinFill(30, { precip: 0, soilMoisture: 0.1, raining: false });
-    assert('susza obniża fill basenu', b.fill < 0.95);
+    b.fill = 0.9;
+    island.updateBasinFill(25, { precip: 0, soilMoisture: 0.1, raining: false, temperature: 36, airMoisture: 0.05 });
+    assert('upał+pustynia obniża fill (parowanie)', b.fill < 0.75);
+    b.fill = 0.05;
+    const bonusDry = island.moistureBonusAt(b.x + b.radius * 0.3, b.z);
+    b.fill = 0.9;
+    const bonusWet = island.moistureBonusAt(b.x + b.radius * 0.3, b.z);
+    assert('pusta misa daje dużo mniejszą oazę niż pełna', bonusDry < bonusWet * 0.5);
   }
 }
 

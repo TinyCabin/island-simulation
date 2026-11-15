@@ -85,16 +85,24 @@ export class Island {
     return this.soilMode;
   }
 
-  /** Bonus wilgoci od jezior / mokradeł / kałuż (zamiast oazy w środku). */
+  /** Bonus wilgoci od jezior / mokradeł / kałuż. Pusta misa ≈ brak oazy. */
   moistureBonusAt(x, z) {
     let bonus = 0;
     const near = nearestBasin(this.basins, x, z);
-    if (near) {
+    if (near && near.basin.fill > 0.08) {
+      const fillFactor = near.basin.fill ** LAKES.moistureFillPower;
       const waterR = basinWaterRadius(near.basin);
+      const floodR = near.basin.radius * (1 + LAKES.wetlandFloodExtra * near.basin.fill);
       const fall = LAKES.moistureFalloff;
-      if (near.dist < near.basin.radius + fall) {
-        bonus = Math.max(bonus, CLIMATE.pondMoistureBonus * (1 - smoothstep(waterR, waterR + fall, near.dist)));
+      if (near.dist < floodR + fall) {
+        const core = 1 - smoothstep(waterR, waterR + fall, near.dist);
+        bonus = Math.max(bonus, CLIMATE.pondMoistureBonus * fillFactor * core);
       }
+    }
+    const soil = this.soilAt(x, z);
+    if (soil === Soil.WETLAND) bonus = Math.max(bonus, CLIMATE.pondMoistureBonus * 0.45);
+    if (soil === Soil.WATER && Math.hypot(x, z) / this.radius < LAND_LIMIT) {
+      bonus = Math.max(bonus, CLIMATE.pondMoistureBonus * 0.85);
     }
     for (let i = 0; i < this.puddles.length; i++) {
       const p = this.puddles[i];
@@ -170,7 +178,6 @@ export class Island {
     for (let i = phase; i < n; i += stride) {
       if (this.soilLocked[i]) continue;
       const type = this.soilGrid[i];
-      if (type === IDX_WATER) continue;
 
       const gz = (i / size) | 0;
       const gx = i - gz * size;
@@ -185,9 +192,26 @@ export class Island {
       let rate = 0;
       let target = type;
 
-      // Mokradła w zagłębieniach
-      if (type === IDX_GRASS && h < LAKES.wetlandMaxHeight && wet >= LAKES.wetlandFormSoilM) {
-        rate = LAKES.wetlandFormRate * wet;
+      // Costowne tylko gdy potrzebne do rozlewiska
+      const needFloodProbe = type === IDX_GRASS || type === IDX_SAND || type === IDX_WETLAND || type === IDX_WATER;
+      const nearWet = needFloodProbe ? this.#nearWetOrWater(x, z, 2.2) : false;
+      const inFlood = needFloodProbe ? this.#inBasinFlood(x, z) : false;
+
+      // Rozlewisko / mokradła: w dołku lub przy wodzie / w strefie flood basenu
+      if (
+        (type === IDX_GRASS || type === IDX_SAND)
+        && h < LAKES.wetlandMaxHeight
+        && wet >= LAKES.wetlandFormSoilM
+        && (nearWet || inFlood || h < 0.45)
+      ) {
+        rate = LAKES.wetlandFormRate * wet * (inFlood ? 1.4 : 1);
+        target = IDX_WETLAND;
+      } else if (type === IDX_WETLAND && wet >= LAKES.floodToWaterSoilM && (nearWet || inFlood)) {
+        // Płytka woda zalewowa (odblokowana — może wyparować)
+        rate = LAKES.wetlandFormRate * 0.8;
+        target = IDX_WATER;
+      } else if (type === IDX_WATER && wet <= LAKES.floodWaterDrySoilM) {
+        rate = LAKES.wetlandDryRate * 1.2;
         target = IDX_WETLAND;
       } else if (type === IDX_WETLAND && wet <= LAKES.wetlandDrySoilM) {
         rate = LAKES.wetlandDryRate * (1 - wet);
@@ -320,22 +344,56 @@ export class Island {
     for (let i = 0; i < this.basins.length; i++) {
       const b = this.basins[i];
       const d = Math.hypot(x - b.x, z - b.z);
-      if (d > b.radius) continue;
+      const floodR = b.radius * (1 + LAKES.wetlandFloodExtra * b.fill);
+      if (d > floodR) continue;
       const waterR = basinWaterRadius(b);
-      if (b.fill > 0.06 && d < waterR) return { soil: Soil.WATER, locked: true };
-      // Mokradło: pierścień przy wyższym fill, albo błoto na dnie przy niskim
-      const wetR = b.radius * (0.35 + 0.55 * b.fill);
-      if (d < wetR) return { soil: Soil.WETLAND, locked: true };
+      // Lustro — locked tylko gdy jest realna woda
+      if (b.fill > 0.08 && d < waterR) return { soil: Soil.WATER, locked: true };
+      // Mokradło w misie / rozlewisku — locked słabo (sync może cofnąć przy wyschnięciu)
+      if (b.fill > 0.12 && d < floodR) return { soil: Soil.WETLAND, locked: true };
+      // Prawie pusta misa: suchy dołek (bez oazy / mokradła)
+      if (b.fill <= 0.12 && d < b.radius * 0.85) return null;
     }
     return null;
   }
 
+  #inBasinFlood(x, z) {
+    for (let i = 0; i < this.basins.length; i++) {
+      const b = this.basins[i];
+      if (b.fill < 0.35) continue;
+      const floodR = b.radius * (1 + LAKES.wetlandFloodExtra * b.fill);
+      if (Math.hypot(x - b.x, z - b.z) < floodR) return true;
+    }
+    return false;
+  }
+
+  #nearWetOrWater(x, z, radius) {
+    // 4 kierunki + środek — tanio wystarczy do rozlewiska
+    const s0 = this.soilAt(x, z);
+    if (s0 === Soil.WATER || s0 === Soil.WETLAND) return true;
+    if (this.soilAt(x + radius, z) === Soil.WATER || this.soilAt(x + radius, z) === Soil.WETLAND) return true;
+    if (this.soilAt(x - radius, z) === Soil.WATER || this.soilAt(x - radius, z) === Soil.WETLAND) return true;
+    if (this.soilAt(x, z + radius) === Soil.WATER || this.soilAt(x, z + radius) === Soil.WETLAND) return true;
+    if (this.soilAt(x, z - radius) === Soil.WATER || this.soilAt(x, z - radius) === Soil.WETLAND) return true;
+    return false;
+  }
+
   /**
-   * Deszcz / wilgoć dopełnia misy; susza obniża lustro.
-   * Aktualizuje fill, meshe i siatkę gleby w basenach.
+   * Deszcz dopełnia misy; upał + suche powietrze + piasek → parowanie (pustynia).
    */
-  updateBasinFill(dt, { precip = 0, soilMoisture = 0.5, raining = false } = {}) {
+  updateBasinFill(dt, {
+    precip = 0,
+    soilMoisture = 0.5,
+    raining = false,
+    temperature = 15,
+    airMoisture = 0.5,
+  } = {}) {
     let changed = false;
+    const hot = clamp01(
+      (temperature - LAKES.evaporateTempStart) / (LAKES.evaporateTempFull - LAKES.evaporateTempStart),
+    );
+    const dryAir = 1 - airMoisture;
+
     for (let i = 0; i < this.basins.length; i++) {
       const b = this.basins[i];
       const before = b.fill;
@@ -344,9 +402,22 @@ export class Island {
       if (soilMoisture >= LAKES.fillWetSoilM) {
         delta += (soilMoisture - LAKES.fillWetSoilM) * LAKES.fillFromSoilM;
       }
+
+      // Retencja: mokradło wokół / wysoki fill trzyma wodę; piasek przyspiesza stratę
+      const rimSoil = this.soilAt(b.x + b.radius * 0.7, b.z);
+      let retention = LAKES.wetlandRetain * b.fill;
+      if (rimSoil === Soil.WETLAND) retention = Math.min(0.85, retention + 0.25);
+      if (rimSoil === Soil.SAND) retention *= 0.35;
+
+      let loss = 0;
       if (soilMoisture < LAKES.fillDrySoilM && precip < 0.15) {
-        delta -= LAKES.fillDrain * (1 - soilMoisture);
+        loss += LAKES.fillDrain * (1 - soilMoisture);
       }
+      // Parowanie termiczne (kluczowe na pustyni)
+      loss += LAKES.evaporateBase * (0.25 + 0.75 * hot) * dryAir * (1 - retention);
+      if (rimSoil === Soil.SAND) loss *= LAKES.sandEvaporateMult;
+
+      delta -= loss;
       b.fill = clamp01(b.fill + delta * dt);
       if (Math.abs(b.fill - before) > 0.002) changed = true;
     }

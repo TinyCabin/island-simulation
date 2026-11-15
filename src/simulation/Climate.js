@@ -70,6 +70,8 @@ export class Climate {
     this.windSpeedAt = null;
     /** @type {(()=>number)|null} globalna wilgotność gleby */
     this.soilMoistureAt = null;
+    /** @type {((x:number,z:number)=>number)|null} oaza od jezior/kałuż */
+    this.moistureBonusAt = null;
   }
 
   get key() {
@@ -98,7 +100,7 @@ export class Climate {
    * + mikroklimat lasu, − wysuszanie wiatrem na odsłoniętym terenie.
    */
   setLocal(x, y, z) {
-    const wet = CLIMATE.pondMoistureBonus * (1 - smoothstep(0, CLIMATE.pondFalloffRadius, Math.hypot(x, z)));
+    const wet = this.moistureBonusAt ? this.moistureBonusAt(x, z) : 0;
     const cover = this.coverAt ? clamp01(this.coverAt(x, z)) : 0;
     const wind = this.windSpeedAt ? this.windSpeedAt() : 0;
     const globalSoil = this.soilMoistureAt ? this.soilMoistureAt() : this.params.moisture;

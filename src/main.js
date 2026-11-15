@@ -14,7 +14,7 @@ const MAX_VISUAL_SPEED = 3;
 
 const engine = new Engine(document.getElementById('app'));
 const climate = new Climate();
-const island = new Island(engine.scene, climate);
+const island = new Island(engine.scene, climate, SIM_SEED);
 engine.constrainCamera((x, z) => island.heightAt(x, z));
 
 const store = new PlantStore(RULES.plantCapacity);

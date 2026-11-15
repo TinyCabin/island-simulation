@@ -78,7 +78,10 @@ Przejście 15 → 2,5 °C: dąb po 20 s bez liści (przebarwienie → opad), sos
 ### Etap B2: ewolucja gleby + polish
 - ✅ Mutowalna siatka (Rock↔Grass↔Sand), canPlantAt (brzeg/staw/stromizna), smooth paint
 - ✅ Lerp pochylenia wiatrem; ręczne T/airM/soilM/precip przy auto off
-- Później: kałuże/hydrologia
+
+### Etap B3: jeziora / mokradła / kałuże
+- ✅ Baseny z seeda (0…N, nie w środku), typ Wetland, kałuże przy wysokim soilM
+- ✅ setSeed przebudowuje teren; oaza wilgoci od najbliższej wody
 
 ### Etap C: reguły między roślinami (punkt „otoczenie”)
 Zacząć od macierzy interakcji `INTERACTIONS[gatunekA][gatunekB]` (cień, nianie, konkurencja) i prostych reguł:

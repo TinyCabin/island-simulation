@@ -44,6 +44,7 @@ export class SimulationManager {
     this.climate.coverAt = (x, z) => this.coverAt(x, z);
     this.climate.windSpeedAt = () => this.weather.windSpeed;
     this.climate.soilMoistureAt = () => this.weather.soilMoisture;
+    this.climate.moistureBonusAt = (x, z) => this.island.moistureBonusAt(x, z);
   }
 
   get weather() {
@@ -97,6 +98,7 @@ export class SimulationManager {
         windSpeed: this.weather.windSpeed,
         coverAt: (x, z) => this.coverAt(x, z),
       });
+      this.island.updatePuddles(soilDt, this.weather.soilMoisture, this.rng);
     }
 
     const w = this.weather;
@@ -147,7 +149,7 @@ export class SimulationManager {
     const localT = this.climate.localT;
     const localSoil = this.climate.localSoilM;
 
-    const nearWater = Math.hypot(x, z) <= RULES.waterSourceRadius;
+    const nearWater = this.island.moistureBonusAt(x, z) > 0.08;
     const wet = conditions.raining || nearWater || localSoil > 0.55;
     const waterStressed = (conditions.drought || localSoil < 0.2) && !nearWater && localSoil < 0.35;
     const weatherGrowth = wet
@@ -185,6 +187,7 @@ export class SimulationManager {
 
   canLive(cfg, soil) {
     if (soil === Soil.WATER) return false;
+    if (soil === Soil.WETLAND) return cfg.soils.includes(Soil.WETLAND);
     if (soil === Soil.ROCK) return cfg.soils.includes(Soil.ROCK);
     return true;
   }
@@ -643,10 +646,12 @@ export class SimulationManager {
     this.rng = new SeededRandom(this.seed);
     this.simTime = 0;
     this.accumulator = 0;
+    this.soilEvolveAcc = 0;
     this.store.count = 0;
     this.store.nextId = 1;
     this.time.history.length = 0;
     this.time.cursor = -1;
+    this.island.regenerate(this.seed);
     this.weatherCore.applyInstant();
     this.populate();
     this.time.capture(this);

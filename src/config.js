@@ -5,6 +5,7 @@ export const Soil = Object.freeze({
   SAND: 'Sand',
   ROCK: 'Rock',
   WATER: 'Water',
+  WETLAND: 'Wetland',
 });
 
 export const SoilMode = Object.freeze({
@@ -18,6 +19,27 @@ export const WORLD = Object.freeze({
   islandRadius: 50,
   terrainSegments: 200,
   soilGridCell: 0.5,
+});
+
+/* Jeziora / mokradła / kałuże — baseny z seeda + reguły wilgotności */
+export const LAKES = Object.freeze({
+  minCenterDist: 0.18, // × islandRadius — nie w samym środku
+  maxCenterDist: 0.62,
+  waterLevel: 0.08, // Y lustra jezior / kałuż
+  moistureFalloff: 22, // oaza wokół wody
+  wetlandPlantBuffer: 0.6, // dodatkowy bufor sadzenia przy mokradle
+  // Kałuże tymczasowe
+  puddleMax: 12,
+  puddleSpawnSoilM: 0.72,
+  puddleDrySoilM: 0.38,
+  puddleRadius: [1.2, 2.8],
+  puddleTickSeconds: 3,
+  // Mokradła dynamiczne (niezablokowane komórki)
+  wetlandFormSoilM: 0.62,
+  wetlandDrySoilM: 0.32,
+  wetlandMaxHeight: 0.55, // tylko w zagłębieniach
+  wetlandFormRate: 0.04,
+  wetlandDryRate: 0.03,
 });
 
 /* Ewolucja gleby (tylko Mixed) + reguły sadzenia / wygładzanie paint */
@@ -40,7 +62,6 @@ export const SOIL_EVOLVE = Object.freeze({
   maxSlope: 1.35, // |Δh| / dystans — powyżej za stromo
   slopeSample: 1.2, // odległość próbek wysokości
   coastBuffer: 2.5, // jednostki od linii WATER (morze)
-  pondPlantMinRadial: 0.14, // jak POND_SOIL_RADIUS, bufor wokół stawu
   // paint
   colorBlend: 0.55, // 0 = twarde komórki, 1 = mocny blend sąsiadów
 });
@@ -292,6 +313,7 @@ export const MODELS = Object.freeze({
 const G = Soil.GRASSLAND;
 const S = Soil.SAND;
 const R = Soil.ROCK;
+const W = Soil.WETLAND;
 
 const SPECIES_DEFAULTS = {
   layer: 'tree', // 'tree' | 'shrub': tłok liczy się tylko w obrębie własnej warstwy
@@ -335,7 +357,7 @@ export const SPECIES = Object.freeze([
     height: 1.3,
     germinationAge: 3, matureAge: 18, lifespan: 100,
     seedChancePerTick: 0.016, seedRadius: 6, crowdingRadius: 2.2, crowdingMax: 2,
-    maxLean: 0.22, fallbackRadius: 0.6,
+    maxLean: 0.22, fallbackRadius: 0.6, soils: [G, W],
     leaf: { strategy: 'deciduous', dropBelowT: 3 },
     colors: { trunk: 0x6b4a2b, crown: 0x5aa83f, autumn: 0xb5792c, seed: 0x7a5c36, deadTrunk: 0x3a2b1d, deadCrown: 0x4f4128 },
   }),
@@ -384,7 +406,7 @@ export const SPECIES = Object.freeze([
     height: 1, proportions: [1.2, 0.8, 1.2],
     germinationAge: 3, matureAge: 15, lifespan: 90,
     seedChancePerTick: 0.018, seedRadius: 6, crowdingRadius: 2.2, crowdingMax: 2,
-    maxLean: 0.2, fallbackRadius: 0.5, soils: [G, S, R],
+    maxLean: 0.2, fallbackRadius: 0.5, soils: [G, S, R, W],
     droughtTolerance: 0.8,
     leaf: { strategy: 'evergreen', dropBelowT: 0 },
     colors: { trunk: 0x6b4a2b, crown: 0xb8a85a, autumn: 0x8a7a40, seed: 0x7a6a40, deadTrunk: 0x3a2b1d, deadCrown: 0x5a4a30 },
@@ -394,7 +416,7 @@ export const SPECIES = Object.freeze([
     height: 0.7, proportions: [1.3, 0.6, 1.3],
     germinationAge: 3, matureAge: 15, lifespan: 80,
     seedChancePerTick: 0.016, seedRadius: 5, crowdingRadius: 2, crowdingMax: 2,
-    maxLean: 0.15, fallbackRadius: 0.5, soils: [G, R],
+    maxLean: 0.15, fallbackRadius: 0.5, soils: [G, R, W],
     droughtTolerance: 0.4,
     leaf: { strategy: 'evergreen', dropBelowT: 0 },
     colors: { trunk: 0x5a4a3a, crown: 0x6e7a4a, autumn: 0x8a5a3a, seed: 0x6a5a4a, deadTrunk: 0x33291f, deadCrown: 0x4a3f30 },

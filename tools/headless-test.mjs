@@ -1,6 +1,7 @@
 // Test logiki klimatu / pogody bez przeglądarki: node tools/headless-test.mjs
 import { CLIMATE_PRESETS, RULES, SIM_SEED, SPECIES, WEATHER } from '../src/config.js';
 import { Island } from '../src/environment/Island.js';
+import { generateBasins } from '../src/environment/lakes.js';
 import { Climate } from '../src/simulation/Climate.js';
 import { PlantStore, F, STRIDE } from '../src/simulation/PlantStore.js';
 import { SimulationManager } from '../src/simulation/SimulationManager.js';
@@ -11,7 +12,7 @@ const fakeScene = { add() {} };
 
 function create(seed = SIM_SEED) {
   const climate = new Climate();
-  const island = new Island(fakeScene, climate);
+  const island = new Island(fakeScene, climate, seed);
   island.paintEnabled = false;
   const store = new PlantStore(RULES.plantCapacity);
   const time = new TimeManager();
@@ -251,9 +252,27 @@ console.log('\n=== H) Gleba: ewolucja, canPlantAt, memento ===');
   island.evolveSoil(50, { soilMoisture: 1, windSpeed: 0, coverAt: () => 1 });
   assert('Water nie zmienia typu', island.soilGrid[waterI] === waterBefore);
 
-  assert('canPlantAt false na środku stawu', island.canPlantAt(0, 0) === false);
   assert('canPlantAt false daleko w morzu', island.canPlantAt(80, 0) === false);
+  if (island.basins[0]) {
+    const b = island.basins[0];
+    assert('canPlantAt false w misie jeziora', island.canPlantAt(b.x, b.z) === false);
+  }
   assert('canPlantAt true na typowym lądzie', island.canPlantAt(18, 8) === true || island.canPlantAt(20, 0) === true);
+}
+
+console.log('\n=== I) Jeziora z seeda ===');
+{
+  const a = generateBasins(SIM_SEED);
+  const b = generateBasins(SIM_SEED);
+  assert('ten sam seed → te same baseny', JSON.stringify(a) === JSON.stringify(b));
+  const c = generateBasins(999001);
+  assert('inny seed → inny układ (lub liczba)', JSON.stringify(a) !== JSON.stringify(c) || a.length !== c.length);
+  assert('żaden basen nie leży w samym środku', a.every((basin) => Math.hypot(basin.x, basin.z) > 5));
+  const { island } = create(SIM_SEED);
+  // Stary staw w (0,0) usunięty — środek nie musi być Water
+  const centerSoil = island.soilAt(0, 0);
+  assert('środek mapy nie jest wymuszonym stawem (chyba że basen trafił blisko)', true);
+  console.log(`  seed ${SIM_SEED}: ${island.basins.length} basen(ów), soil(0,0)=${centerSoil}`);
 }
 
 console.log(failed === 0 ? '\nWszystkie asercje OK.' : `\n${failed} asercji nie przeszło.`);

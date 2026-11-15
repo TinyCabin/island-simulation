@@ -1,23 +1,25 @@
 import * as THREE from 'three';
-import { CLIMATE, Soil, SoilMode, SOIL_EVOLVE, WORLD } from '../config.js';
+import { CLIMATE, LAKES, SIM_SEED, Soil, SoilMode, SOIL_EVOLVE, WORLD } from '../config.js';
 import { fbm } from '../utils/noise.js';
+import { basinDigAt, generateBasins, nearestBasin } from './lakes.js';
 
-const SOIL_ORDER = [Soil.GRASSLAND, Soil.SAND, Soil.ROCK, Soil.WATER];
+const SOIL_ORDER = [Soil.GRASSLAND, Soil.SAND, Soil.ROCK, Soil.WATER, Soil.WETLAND];
 const SOIL_COLORS = {
   [Soil.GRASSLAND]: 0x5f9e3d,
   [Soil.SAND]: 0xdcc88e,
   [Soil.ROCK]: 0x808086,
   [Soil.WATER]: 0x7d7455,
+  [Soil.WETLAND]: 0x4a6b3a,
 };
 
 const IDX_GRASS = 0;
 const IDX_SAND = 1;
 const IDX_ROCK = 2;
 const IDX_WATER = 3;
+const IDX_WETLAND = 4;
 
 const LAND_LIMIT = 0.95;
 const SAND_LIMIT = 0.8;
-const POND_SOIL_RADIUS = 0.07;
 const ROCK_THRESHOLD = 0.62;
 
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
@@ -27,7 +29,8 @@ const smoothstep = (edge0, edge1, x) => {
 };
 
 export class Island {
-  constructor(scene, climate) {
+  constructor(scene, climate, seed = SIM_SEED) {
+    this.scene = scene;
     this.climate = climate;
     this.paintedKey = '';
     this.radius = WORLD.islandRadius;
@@ -35,13 +38,33 @@ export class Island {
     this.soilMode = SoilMode.MIXED;
     this.soilDirty = false;
     this.evolvePhase = 0;
-    /** false w testach headless — pomija kosztowny vertex paint */
     this.paintEnabled = true;
+    this.seed = seed >>> 0;
+    this.basins = [];
+    this.puddles = [];
+    this.puddleAcc = 0;
+    this.lakeMeshes = [];
 
+    this.basins = generateBasins(this.seed, this.radius);
     this.#buildSoilGrid();
     this.terrain = this.#buildTerrain();
-    this.water = this.#buildWater();
-    scene.add(this.terrain, this.water);
+    this.ocean = this.#buildOcean();
+    this.lakeGroup = new THREE.Group();
+    scene.add(this.terrain, this.ocean, this.lakeGroup);
+    this.#rebuildLakeMeshes();
+  }
+
+  /** Nowy seed → nowe baseny, przebudowa wysokości / gleby / meshy. */
+  regenerate(seed) {
+    this.seed = seed >>> 0;
+    this.basins = generateBasins(this.seed, this.radius);
+    this.puddles = [];
+    this.#buildSoilGrid();
+    this.#applyTerrainHeights();
+    this.terrain.geometry.computeVertexNormals();
+    this.soilDirty = true;
+    this.refreshClimate();
+    this.#rebuildLakeMeshes();
   }
 
   heightAt(x, z) {
@@ -49,8 +72,8 @@ export class Island {
     const base = clamp01((LAND_LIMIT - this.#shore(x, z)) / LAND_LIMIT);
     const relief = fbm(x * 0.09 - 11, z * 0.09 + 5);
     const rockBump = smoothstep(ROCK_THRESHOLD, 0.8, this.#rockNoise(x, z));
-    const pond = 1 - smoothstep(0.06, 0.12, radial);
-    return Math.pow(base, 0.7) * 4 + (relief - 0.5) * 1.6 * base + rockBump * 1.4 * base - pond * 5.5 - 0.5;
+    const dig = basinDigAt(this.basins, x, z);
+    return Math.pow(base, 0.7) * 4 + (relief - 0.5) * 1.6 * base + rockBump * 1.4 * base - dig - 0.5;
   }
 
   soilAt(x, z) {
@@ -58,8 +81,29 @@ export class Island {
     const gz = Math.floor((z + this.extent) / WORLD.soilGridCell);
     if (gx < 0 || gz < 0 || gx >= this.gridSize || gz >= this.gridSize) return Soil.WATER;
     const natural = SOIL_ORDER[this.soilGrid[gz * this.gridSize + gx]];
-    if (natural === Soil.WATER || this.soilMode === SoilMode.MIXED) return natural;
+    if (natural === Soil.WATER || natural === Soil.WETLAND || this.soilMode === SoilMode.MIXED) return natural;
     return this.soilMode;
+  }
+
+  /** Bonus wilgoci od jezior / mokradeł / kałuż (zamiast oazy w środku). */
+  moistureBonusAt(x, z) {
+    let bonus = 0;
+    const near = nearestBasin(this.basins, x, z);
+    if (near) {
+      const waterR = near.basin.radius * near.basin.waterRatio;
+      const fall = LAKES.moistureFalloff;
+      if (near.dist < near.basin.radius + fall) {
+        bonus = Math.max(bonus, CLIMATE.pondMoistureBonus * (1 - smoothstep(waterR, waterR + fall, near.dist)));
+      }
+    }
+    for (let i = 0; i < this.puddles.length; i++) {
+      const p = this.puddles[i];
+      const d = Math.hypot(x - p.x, z - p.z);
+      if (d < p.radius + 6) {
+        bonus = Math.max(bonus, CLIMATE.pondMoistureBonus * 0.7 * (1 - smoothstep(p.radius, p.radius + 6, d)));
+      }
+    }
+    return bonus;
   }
 
   setSoilMode(mode) {
@@ -79,37 +123,40 @@ export class Island {
     this.soilDirty = false;
   }
 
-  /**
-   * Czy wolno sadzić roślinę w (x,z): nie woda, nie stromy brzeg, nie pas wybrzeża/stawu.
-   */
   canPlantAt(x, z) {
     const soil = this.soilAt(x, z);
     if (soil === Soil.WATER) return false;
 
-    const radial = Math.hypot(x, z) / this.radius;
-    if (radial < SOIL_EVOLVE.pondPlantMinRadial) return false;
-
     const shore = this.#shore(x, z);
-    // Blisko linii morza (WATER zaczyna się ~LAND_LIMIT)
     if (shore > LAND_LIMIT - SOIL_EVOLVE.coastBuffer / this.radius) return false;
+
+    for (let i = 0; i < this.basins.length; i++) {
+      const b = this.basins[i];
+      const d = Math.hypot(x - b.x, z - b.z);
+      if (d < b.radius * b.waterRatio + 0.8) return false;
+      if (soil === Soil.WETLAND && d < b.radius * 0.9 + LAKES.wetlandPlantBuffer) {
+        // mokradło: pozwalamy tylko jeśli gatunek to obsłuży (canLive); tu nie blokujemy całego Wetland
+      }
+    }
+
+    for (let i = 0; i < this.puddles.length; i++) {
+      const p = this.puddles[i];
+      if (Math.hypot(x - p.x, z - p.z) < p.radius + 0.4) return false;
+    }
 
     const d = SOIL_EVOLVE.slopeSample;
     const h = this.heightAt(x, z);
     const gx = Math.abs(this.heightAt(x + d, z) - this.heightAt(x - d, z)) / (2 * d);
     const gz = Math.abs(this.heightAt(x, z + d) - this.heightAt(x, z - d)) / (2 * d);
-    const slope = Math.hypot(gx, gz);
-    if (slope > SOIL_EVOLVE.maxSlope) return false;
-
-    // Bardzo nisko względem wody (płaski mesh wody ~0) — unikaj „w wodzie”
+    if (Math.hypot(gx, gz) > SOIL_EVOLVE.maxSlope) return false;
     if (h < 0.15) return false;
 
     return true;
   }
 
   /**
-   * Ewolucja typów gleby (tylko Mixed).
-   * @param {number} dt
-   * @param {{ soilMoisture: number, windSpeed: number, coverAt: (x:number,z:number)=>number }} ctx
+   * Ewolucja gleby + mokradła dynamiczne (tylko Mixed).
+   * Komórki locked (stałe jezioro) nie zmieniają typu.
    */
   evolveSoil(dt, ctx) {
     if (this.soilMode !== SoilMode.MIXED) return 0;
@@ -120,11 +167,11 @@ export class Island {
     const stride = SOIL_EVOLVE.cellStride;
     const phase = this.evolvePhase % stride;
     this.evolvePhase++;
-    // Kompensacja stride: każda komórka dostaje update rzadziej
     const stepDt = dt * stride;
     let changed = 0;
 
     for (let i = phase; i < n; i += stride) {
+      if (this.soilLocked[i]) continue;
       const type = this.soilGrid[i];
       if (type === IDX_WATER) continue;
 
@@ -133,14 +180,22 @@ export class Island {
       const x = -extent + (gx + 0.5) * cell;
       const z = -extent + (gz + 0.5) * cell;
       const cover = ctx.coverAt(x, z);
-      const wet = localSoilWet(x, z, ctx.soilMoisture);
+      const wet = localSoilWet(this, x, z, ctx.soilMoisture);
       const windNorm = clamp01(ctx.windSpeed / 1.5);
       const erosion = windNorm * (1 - cover);
+      const h = this.heightAt(x, z);
 
       let rate = 0;
       let target = type;
 
-      if (type === IDX_ROCK) {
+      // Mokradła w zagłębieniach
+      if (type === IDX_GRASS && h < LAKES.wetlandMaxHeight && wet >= LAKES.wetlandFormSoilM) {
+        rate = LAKES.wetlandFormRate * wet;
+        target = IDX_WETLAND;
+      } else if (type === IDX_WETLAND && wet <= LAKES.wetlandDrySoilM) {
+        rate = LAKES.wetlandDryRate * (1 - wet);
+        target = IDX_GRASS;
+      } else if (type === IDX_ROCK) {
         if (wet >= SOIL_EVOLVE.wetForGrowth && cover >= SOIL_EVOLVE.coverForGrowth) {
           rate = SOIL_EVOLVE.rockToGrassRate * ((wet - SOIL_EVOLVE.wetForGrowth) / 0.55 + cover);
           target = IDX_GRASS;
@@ -184,13 +239,57 @@ export class Island {
     return changed;
   }
 
+  /** Kałuże tymczasowe: spawn przy mokrej glebie w dołkach, znikają przy suszy. */
+  updatePuddles(dt, soilMoisture, rng) {
+    this.puddleAcc += dt;
+    if (this.puddleAcc < LAKES.puddleTickSeconds) return;
+    this.puddleAcc = 0;
+
+    if (soilMoisture < LAKES.puddleDrySoilM) {
+      this.puddles = this.puddles.filter((p) => {
+        p.life -= 1;
+        return p.life > 0;
+      });
+      this.#rebuildPuddleMeshes();
+      return;
+    }
+
+    if (soilMoisture >= LAKES.puddleSpawnSoilM && this.puddles.length < LAKES.puddleMax) {
+      for (let tryN = 0; tryN < 8 && this.puddles.length < LAKES.puddleMax; tryN++) {
+        const ang = rng.range(0, Math.PI * 2);
+        const dist = Math.sqrt(rng.next()) * this.radius * 0.75;
+        const x = Math.cos(ang) * dist;
+        const z = Math.sin(ang) * dist;
+        if (this.#shore(x, z) > SAND_LIMIT) continue;
+        const h = this.heightAt(x, z);
+        if (h < 0.05 || h > LAKES.wetlandMaxHeight) continue;
+        if (this.soilAt(x, z) === Soil.WATER) continue;
+        if (this.puddles.some((p) => Math.hypot(p.x - x, p.z - z) < 4)) continue;
+        const near = nearestBasin(this.basins, x, z);
+        if (near && near.dist < near.basin.radius * near.basin.waterRatio + 2) continue;
+
+        const r = rng.range(LAKES.puddleRadius[0], LAKES.puddleRadius[1]);
+        this.puddles.push({ x, z, radius: r, life: 4 });
+      }
+    } else if (soilMoisture >= LAKES.puddleSpawnSoilM) {
+      for (const p of this.puddles) p.life = Math.min(6, p.life + 1);
+    }
+
+    this.#rebuildPuddleMeshes();
+  }
+
   createSoilSnapshot() {
     return {
       grid: this.soilGrid.slice(),
       progress: this.soilProgress.slice(),
       target: this.soilTarget.slice(),
+      locked: this.soilLocked.slice(),
       mode: this.soilMode,
       evolvePhase: this.evolvePhase,
+      puddleAcc: this.puddleAcc,
+      basins: this.basins.map((b) => ({ ...b })),
+      puddles: this.puddles.map((p) => ({ ...p })),
+      seed: this.seed,
     };
   }
 
@@ -199,10 +298,17 @@ export class Island {
     this.soilGrid.set(snapshot.grid);
     this.soilProgress.set(snapshot.progress);
     this.soilTarget.set(snapshot.target);
+    if (snapshot.locked) this.soilLocked.set(snapshot.locked);
     this.soilMode = snapshot.mode;
     this.evolvePhase = snapshot.evolvePhase ?? 0;
+    this.puddleAcc = snapshot.puddleAcc ?? 0;
+    if (snapshot.basins) this.basins = snapshot.basins.map((b) => ({ ...b }));
+    if (snapshot.puddles) this.puddles = snapshot.puddles.map((p) => ({ ...p }));
+    if (snapshot.seed !== undefined) this.seed = snapshot.seed;
     this.soilDirty = true;
     this.refreshClimate();
+    if (this.paintEnabled) this.#applyTerrainHeights();
+    this.#rebuildLakeMeshes();
   }
 
   #shore(x, z) {
@@ -213,13 +319,24 @@ export class Island {
     return fbm(x * 0.07 + 40, z * 0.07 - 17);
   }
 
+  #basinSoilAt(x, z) {
+    for (let i = 0; i < this.basins.length; i++) {
+      const b = this.basins[i];
+      const d = Math.hypot(x - b.x, z - b.z);
+      if (d < b.radius * b.waterRatio) return { soil: Soil.WATER, locked: true };
+      if (d < b.radius * 0.88) return { soil: Soil.WETLAND, locked: true };
+    }
+    return null;
+  }
+
   #classify(x, z) {
-    const radial = Math.hypot(x, z) / this.radius;
     const shore = this.#shore(x, z);
-    if (shore > LAND_LIMIT || radial < POND_SOIL_RADIUS) return Soil.WATER;
-    if (shore > SAND_LIMIT) return Soil.SAND;
-    if (this.#rockNoise(x, z) > ROCK_THRESHOLD) return Soil.ROCK;
-    return Soil.GRASSLAND;
+    if (shore > LAND_LIMIT) return { soil: Soil.WATER, locked: true };
+    const basin = this.#basinSoilAt(x, z);
+    if (basin) return basin;
+    if (shore > SAND_LIMIT) return { soil: Soil.SAND, locked: false };
+    if (this.#rockNoise(x, z) > ROCK_THRESHOLD) return { soil: Soil.ROCK, locked: false };
+    return { soil: Soil.GRASSLAND, locked: false };
   }
 
   #buildSoilGrid() {
@@ -228,16 +345,27 @@ export class Island {
     this.soilGrid = new Uint8Array(n);
     this.soilProgress = new Float32Array(n);
     this.soilTarget = new Uint8Array(n);
+    this.soilLocked = new Uint8Array(n);
     for (let gz = 0; gz < this.gridSize; gz++) {
       for (let gx = 0; gx < this.gridSize; gx++) {
         const x = -this.extent + (gx + 0.5) * WORLD.soilGridCell;
         const z = -this.extent + (gz + 0.5) * WORLD.soilGridCell;
-        const idx = SOIL_ORDER.indexOf(this.#classify(x, z));
+        const { soil, locked } = this.#classify(x, z);
+        const idx = SOIL_ORDER.indexOf(soil);
         const i = gz * this.gridSize + gx;
         this.soilGrid[i] = idx;
         this.soilTarget[i] = idx;
+        this.soilLocked[i] = locked ? 1 : 0;
       }
     }
+  }
+
+  #applyTerrainHeights() {
+    const position = this.terrain.geometry.attributes.position;
+    for (let i = 0; i < position.count; i++) {
+      position.setY(i, this.heightAt(position.getX(i), position.getZ(i)));
+    }
+    position.needsUpdate = true;
   }
 
   #buildTerrain() {
@@ -270,7 +398,7 @@ export class Island {
       const [r, g, b] = this.climate.groundRGB(x, y, z);
       out.setRGB(r, g, b, THREE.SRGBColorSpace);
     } else {
-      out.set(SOIL_COLORS[soil]);
+      out.set(SOIL_COLORS[soil] ?? SOIL_COLORS[Soil.GRASSLAND]);
     }
   }
 
@@ -306,18 +434,76 @@ export class Island {
     this.paintedKey = this.climate.key;
   }
 
-  #buildWater() {
+  #buildOcean() {
     const geometry = new THREE.PlaneGeometry(this.extent * 2, this.extent * 2);
     geometry.rotateX(-Math.PI / 2);
     const material = new THREE.MeshStandardMaterial({ color: 0x2f78a8, roughness: 0.25, metalness: 0.1 });
     const mesh = new THREE.Mesh(geometry, material);
     mesh.receiveShadow = true;
+    mesh.position.y = 0;
     return mesh;
+  }
+
+  #rebuildLakeMeshes() {
+    while (this.lakeGroup.children.length) {
+      const child = this.lakeGroup.children[0];
+      this.lakeGroup.remove(child);
+      child.geometry?.dispose();
+      child.material?.dispose();
+    }
+    this.lakeMeshes = [];
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x3a8ec4,
+      roughness: 0.22,
+      metalness: 0.08,
+      transparent: true,
+      opacity: 0.92,
+    });
+
+    for (const b of this.basins) {
+      const r = b.radius * b.waterRatio;
+      const geo = new THREE.CircleGeometry(r, 32);
+      geo.rotateX(-Math.PI / 2);
+      const mesh = new THREE.Mesh(geo, mat.clone());
+      mesh.position.set(b.x, LAKES.waterLevel, b.z);
+      mesh.receiveShadow = true;
+      this.lakeGroup.add(mesh);
+      this.lakeMeshes.push(mesh);
+    }
+
+    this.#rebuildPuddleMeshes();
+  }
+
+  #rebuildPuddleMeshes() {
+    // Usuń poprzednie kałuże (tag userData.puddle)
+    for (let i = this.lakeGroup.children.length - 1; i >= 0; i--) {
+      const child = this.lakeGroup.children[i];
+      if (!child.userData.puddle) continue;
+      this.lakeGroup.remove(child);
+      child.geometry?.dispose();
+      child.material?.dispose();
+    }
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x4aa0c8,
+      roughness: 0.3,
+      metalness: 0.05,
+      transparent: true,
+      opacity: 0.75,
+    });
+
+    for (const p of this.puddles) {
+      const geo = new THREE.CircleGeometry(p.radius, 16);
+      geo.rotateX(-Math.PI / 2);
+      const mesh = new THREE.Mesh(geo, mat.clone());
+      mesh.position.set(p.x, LAKES.waterLevel + 0.02, p.z);
+      mesh.userData.puddle = true;
+      this.lakeGroup.add(mesh);
+    }
   }
 }
 
-/** Lokalna wilgotność gleby: global + oaza przy stawie (bez cover/erozji — te osobno). */
-function localSoilWet(x, z, soilMoisture) {
-  const pond = CLIMATE.pondMoistureBonus * (1 - smoothstep(0, CLIMATE.pondFalloffRadius, Math.hypot(x, z)));
-  return clamp01(soilMoisture + pond);
+function localSoilWet(island, x, z, soilMoisture) {
+  return clamp01(soilMoisture + island.moistureBonusAt(x, z));
 }

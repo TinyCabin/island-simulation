@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+tools/_test-out.txt
+tools/test-out2.txt
+.vite/
+*.local
+.idea/
+.vscode/

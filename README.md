@@ -1,4 +1,8 @@
-# Symulacja ekosystemu wyspy 3D
+﻿# island-simulation
+
+A simple, interactive island simulation focused on visualizing how changing parameters affects the island over time.
+
+## Symulacja ekosystemu wyspy 3D
 
 ```bash
 npm install

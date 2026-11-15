@@ -131,9 +131,12 @@ export const WEATHER = Object.freeze({
   windAngleDefault: 40,
   windSpeedMax: 1.5,
 
-  // Gleba: ładowanie z opadu, parowanie
-  soilFromPrecip: 0.4, // /s przy precip=1
-  soilEvapBase: 0.06, // /s przy suchej pogodzie
+  // Gleba: trzyma się celu wilgotności klimatu; deszcz/parowanie tylko lekko wahają
+  soilChaseRate: 0.1, // 1/s — doganianie target.moisture
+  soilSwingAmp: 0.18, // max |soilM − target| przy auto pogodzie
+  soilFromPrecip: 0.12, // /s przy precip=1 (wcześniej 0.4 — za mocno)
+  soilEvapBase: 0.025, // /s przy suchej pogodzie
+  soilWeatherScale: 0.45, // skala wpływu deszcz/parowanie na tle chase
   snowSoilFactor: 0.35, // śnieg wolniej podnosi soilM
 
   // Liście vs wiatr (liściaste / drought)

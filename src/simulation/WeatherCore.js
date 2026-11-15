@@ -95,13 +95,16 @@ export class WeatherCore {
       s.windAngle = (s.windAngle + rng.range(-8, 8) * dt + (rng.next() - 0.5) * 4) % 360;
       if (s.windAngle < 0) s.windAngle += 360;
 
-      // Gleba: opad ładuje, inaczej paruje; śnieg wolniej
+      // Gleba: goni cel klimatu; deszcz/parowanie dają małe wahania w paśmie
       const snow = s.temperature < WEATHER.snowTempC && s.precip > WEATHER.precipRainThreshold * 0.5;
       const soilGain = s.precip * WEATHER.soilFromPrecip * (snow ? WEATHER.snowSoilFactor : 1);
       const soilLoss = WEATHER.soilEvapBase * (1 - s.precip) * (0.5 + 0.5 * (fuzzy.dSoilM !== undefined ? 1 - fuzzy.dSoilM : 0.5));
-      // Gdy fuzzy chce mokra glebę przy opadzie — wzmocnij gain
-      const soilBias = ((fuzzy.dSoilM ?? 0.5) - 0.5) * 0.2;
-      s.soilMoisture += (soilGain - soilLoss + soilBias) * dt;
+      const soilBias = ((fuzzy.dSoilM ?? 0.5) - 0.5) * 0.06;
+      s.soilMoisture += (chaseM - s.soilMoisture) * WEATHER.soilChaseRate * dt;
+      s.soilMoisture += (soilGain - soilLoss + soilBias) * WEATHER.soilWeatherScale * dt;
+      const lo = clamp01(chaseM - WEATHER.soilSwingAmp);
+      const hi = clamp01(chaseM + WEATHER.soilSwingAmp);
+      s.soilMoisture = clamp(s.soilMoisture, lo, hi);
     }
 
     s.temperature = clamp(s.temperature, CLIMATE.temperature.min, CLIMATE.temperature.max);

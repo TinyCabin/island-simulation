@@ -464,16 +464,23 @@ export class Island {
         if (!this.soilLocked[i] && this.soilGrid[i] !== IDX_WATER && this.soilGrid[i] !== IDX_WETLAND) continue;
         const x = -extent + (gx + 0.5) * cell;
         const z = -extent + (gz + 0.5) * cell;
-        // Tylko komórki należące do basenów (nie ocean)
+        // Tylko komórki należące do basenów (nie ocean / nie stały border)
         const shore = this.#shore(x, z);
         if (shore > LAND_LIMIT) continue;
+        // Pas nadmorski = stały Sand — sync basenów nie może go odblokować
+        if (shore > SAND_LIMIT) {
+          this.soilGrid[i] = IDX_SAND;
+          this.soilTarget[i] = IDX_SAND;
+          this.soilLocked[i] = 1;
+          continue;
+        }
         const classified = this.#basinSoilAt(x, z);
         if (classified) {
           const idx = SOIL_ORDER.indexOf(classified.soil);
           this.soilGrid[i] = idx;
           this.soilTarget[i] = idx;
           this.soilLocked[i] = 1;
-        } else if (this.soilLocked[i]) {
+        } else if (this.soilLocked[i] && (this.soilGrid[i] === IDX_WATER || this.soilGrid[i] === IDX_WETLAND)) {
           // Było w basenie, fill spadł — wróć do trawy/skały
           const rock = this.#rockNoise(x, z) > ROCK_THRESHOLD;
           const idx = rock ? IDX_ROCK : IDX_GRASS;
@@ -490,7 +497,8 @@ export class Island {
     if (shore > LAND_LIMIT) return { soil: Soil.WATER, locked: true };
     const basin = this.#basinSoilAt(x, z);
     if (basin) return basin;
-    if (shore > SAND_LIMIT) return { soil: Soil.SAND, locked: false };
+    // Pas nadmorski = stały border (nie eroduje / nie zamienia się w mokradło od deszczu)
+    if (shore > SAND_LIMIT) return { soil: Soil.SAND, locked: true };
     if (this.#rockNoise(x, z) > ROCK_THRESHOLD) return { soil: Soil.ROCK, locked: false };
     return { soil: Soil.GRASSLAND, locked: false };
   }

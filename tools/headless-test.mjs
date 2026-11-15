@@ -135,9 +135,18 @@ console.log('\n=== F) Wilgotny cel → precip / soilM; śnieg ===');
   const { sim, climate } = create();
   climate.setTarget(28, 0.95);
   sim.weatherCore.applyInstant();
-  sim.weather.soilMoisture = 0.2;
+  sim.weather.soilMoisture = 0.55;
   run(sim, 60);
-  assert('wilgotny klimat podnosi precip lub soilM', sim.weather.precip > 0.25 || sim.weather.soilMoisture > 0.35);
+  assert('wilgotny klimat podnosi precip lub soilM', sim.weather.precip > 0.25 || sim.weather.soilMoisture > 0.55);
+
+  let soilMin = 1;
+  let soilMax = 0;
+  for (let t = 0; t < 180; t += RULES.tickSeconds) {
+    sim.step();
+    soilMin = Math.min(soilMin, sim.weather.soilMoisture);
+    soilMax = Math.max(soilMax, sim.weather.soilMoisture);
+  }
+  assert('soilM w paśmie wokół celu (bez oscylacji 0–1)', soilMax - soilMin < 0.4 && soilMin > 0.55);
 
   climate.setTarget(-8, 0.9);
   sim.weatherCore.applyInstant();
@@ -311,6 +320,27 @@ console.log('\n=== I) Jeziora z seeda ===');
   }
   assert('znaleziono brzeg bez basenu', foundCoast);
   assert('ocean/brzeg daje znikomą wilgoć', coastBonus < 0.06 && oceanBonus < 0.06);
+
+  // Stały border: Sand na brzegu jest locked i nie ewoluuje pod deszczem
+  let coastSandI = -1;
+  let csx = 0;
+  let csz = 0;
+  const size = island.gridSize;
+  for (let i = 0; i < size * size; i++) {
+    if (island.soilGrid[i] !== 1 || !island.soilLocked[i]) continue; // Sand locked
+    const gz = Math.floor(i / size);
+    const gx = i % size;
+    csx = -island.extent + (gx + 0.5) * 0.5;
+    csz = -island.extent + (gz + 0.5) * 0.5;
+    if (island.basins.some((basin) => Math.hypot(csx - basin.x, csz - basin.z) < basin.radius + 10)) continue;
+    coastSandI = i;
+    break;
+  }
+  assert('znaleziono locked Sand na brzegu', coastSandI >= 0);
+  for (let t = 0; t < 200; t++) {
+    island.evolveSoil(1, { soilMoisture: 0.95, windSpeed: 0.2, coverAt: () => 1 });
+  }
+  assert('border Sand nie zmienia typu przy deszczu', island.soilGrid[coastSandI] === 1);
 }
 
 console.log(failed === 0 ? '\nWszystkie asercje OK.' : `\n${failed} asercji nie przeszło.`);

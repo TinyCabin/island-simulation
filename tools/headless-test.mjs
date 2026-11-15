@@ -208,9 +208,10 @@ console.log('\n=== H) Gleba: ewolucja, canPlantAt, memento ===');
   island.soilGrid[rockI] = 2;
   island.soilProgress[rockI] = 0;
   island.soilTarget[rockI] = 2;
+  // 0.5: wystarczy na rock→grass, za mało na formowanie mokradeł (0.55+)
   for (let t = 0; t < 500; t++) {
     island.evolveSoil(1, {
-      soilMoisture: 0.9,
+      soilMoisture: 0.5,
       windSpeed: 0.1,
       coverAt: () => 1,
     });
